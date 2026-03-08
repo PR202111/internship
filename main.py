@@ -4,7 +4,7 @@ from constants import UPLOAD_DIR,MAX_FILES
 import os
 import shutil
 import uvicorn
-from utils import extract_text_from_pdf,chunk_text,create_embeddings,client,model
+from utils import extract_text_from_pdf,chunk_text,create_embeddings,extract_text_from_txt,client,model
 from ai_summarizer import summarize_query
 
 MAP = {}
@@ -49,11 +49,15 @@ def start_session(user: UserRequest):
 
     for file in os.listdir(USER_DIR):
 
-        if file.endswith(".pdf"):
+        if file.endswith(".pdf") or file.endswith(".txt"):
 
             file_path = os.path.join(USER_DIR, file)
 
-            text = extract_text_from_pdf(file_path)
+            if file.endswith(".pdf"):
+                text = extract_text_from_pdf(file_path)
+            else:
+                text = extract_text_from_txt(file_path)
+
             chunks = chunk_text(text)
             embeddings = create_embeddings(chunks)
 
@@ -68,6 +72,11 @@ def start_session(user: UserRequest):
 
 @app.post("/upload-pdf/")
 async def upload_pdf(file: UploadFile = File(...)):
+    if not (file.filename.endswith(".pdf") or file.filename.endswith(".txt")):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and TXT files allowed"
+        )
 
     if len(MAP) >= MAX_FILES:
         raise HTTPException(
@@ -92,7 +101,15 @@ async def upload_pdf(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    text = extract_text_from_pdf(file_path)
+    if file.filename.endswith(".pdf"):
+        text = extract_text_from_pdf(file_path)
+    elif file.filename.endswith(".txt"):
+        text = extract_text_from_txt(file_path)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and TXT files are supported"
+        )
     chunks = chunk_text(text)
     embeddings = create_embeddings(chunks)
 
