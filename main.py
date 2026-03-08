@@ -1,13 +1,15 @@
 from fastapi import FastAPI,HTTPException,UploadFile,File
 from pydantic import BaseModel
-from constants import UPLOAD_DIR
+from constants import UPLOAD_DIR,MAX_FILES
 import os
 import shutil
 import uvicorn
 from utils import extract_text_from_pdf,chunk_text,create_embeddings,client,model
-
+from ai_summarizer import summarize_query
 
 MAP = {}
+CURRENT_USER = None
+USER_DIR = None
 
 app = FastAPI(title="Convert Pdf to a Search DB",version="1.0")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -28,27 +30,80 @@ def store_vectors(chunks,embeddings,collection_name):
 def root():
     return {"message": "PDF Vector Search API Running"}
 
+
+class UserRequest(BaseModel):
+    username: str
+
+
+@app.post("/start-session/")
+def start_session(user: UserRequest):
+
+    global CURRENT_USER, USER_DIR, MAP
+
+    CURRENT_USER = user.username
+    USER_DIR = os.path.join(UPLOAD_DIR, CURRENT_USER)
+
+    os.makedirs(USER_DIR, exist_ok=True)
+
+    MAP.clear()
+
+    for file in os.listdir(USER_DIR):
+
+        if file.endswith(".pdf"):
+
+            file_path = os.path.join(USER_DIR, file)
+
+            text = extract_text_from_pdf(file_path)
+            chunks = chunk_text(text)
+            embeddings = create_embeddings(chunks)
+
+            collection_name = f"{CURRENT_USER}_{file}"
+
+            store_vectors(chunks, embeddings, collection_name)
+
+            MAP[file] = collection_name
+
+    return {"message": f"Session started for {CURRENT_USER}"}
+
+
 @app.post("/upload-pdf/")
 async def upload_pdf(file: UploadFile = File(...)):
+
+    if len(MAP) >= MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail="Max PDF uploads reached. Delete a PDF first."
+        )
+
+    if file.filename in MAP:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF already uploaded"
+        )
     
-    file_path = f"{UPLOAD_DIR}/{file.filename}"
-    
+    if CURRENT_USER is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Start a session first"
+        )
+
+    file_path = os.path.join(USER_DIR, file.filename)
+
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     text = extract_text_from_pdf(file_path)
-
-
     chunks = chunk_text(text)
-
-
     embeddings = create_embeddings(chunks)
 
-    collection_name = file.filename
-    store_vectors(chunks, embeddings,file.filename)
+    collection_name = f"{CURRENT_USER}_{file.filename}"
+
+    store_vectors(chunks, embeddings, collection_name)
+
     MAP[file.filename] = collection_name
 
     return {"message": "PDF processed and indexed"}
+
 
 @app.get("/list-of-pdfs/")
 def list_pdfs():
@@ -68,7 +123,7 @@ def delete_pdf(pdf_name: str):
     client.delete_collection(collection_name)
 
     
-    file_path = os.path.join(UPLOAD_DIR, pdf_name)
+    file_path = os.path.join(USER_DIR, pdf_name)
     if os.path.exists(file_path):
         os.remove(file_path)
 
@@ -90,8 +145,30 @@ def query_docs(query: str, collection: str):
         query_embeddings=[query_embedding.tolist()],
         n_results=3
     )
+    print(results)
+    reply = summarize_query(query, results)
 
-    return {"results": results}
+    return {"AiReply": reply}
+
+
+@app.post("/end-session/")
+def end_session():
+
+    global CURRENT_USER, USER_DIR
+
+    for key in list(MAP.keys()):
+
+        collection_name = MAP[key]
+        client.delete_collection(collection_name)
+
+        del MAP[key]
+
+    CURRENT_USER = None
+    USER_DIR = None
+
+    return {"success": "Session Ended"}
+
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000)
