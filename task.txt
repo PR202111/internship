@@ -1,0 +1,8 @@
+Build a Mini AI Knowledge Base API.
+
+The system should allow users to:
+	1.	Upload documents (text or PDF)
+	2.	Store document metadata in a database
+	3.	Generate embeddings
+	4.	Perform semantic search
+	5.	Ask questions and receive AI-generated answers grounded in stored documents
